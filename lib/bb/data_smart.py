@@ -30,8 +30,8 @@ from bb.COW  import COWDictBase
 
 logger = logging.getLogger("BitBake.Data")
 
-__setvar_keyword__ = [":append", ":prepend", ":remove"]
-__setvar_regexp__ = re.compile(r'(?P<base>.*?)(?P<keyword>:append|:prepend|:remove)(:(?P<add>[^A-Z]*))?$')
+__setvar_keyword__ = ["_append", "_prepend", "_remove", ":append", ":prepend", ":remove"]
+__setvar_regexp__ = re.compile(r'(?P<base>.*?)(?P<keyword>_append|_prepend|_remove|:append|:prepend|:remove)([_:](?P<add>[^A-Z]*))?$')
 __expand_var_regexp__ = re.compile(r"\${[a-zA-Z0-9\-_+./~:]+}")
 __expand_python_regexp__ = re.compile(r"\${@(?:{.*?}|.)+?}")
 __whitespace_split__ = re.compile(r'(\s)')
@@ -384,7 +384,7 @@ class VariableHistory(object):
         for event in history:
             if 'flag' in event:
                 continue
-            if event['op'] == ':remove':
+            if event['op'] == '_remove':
                 continue
             if isset and event['op'] == 'set?':
                 continue
@@ -525,6 +525,18 @@ class DataSmart(MutableMapping):
             if "_data" not in dest:
                 break
             dest = dest["_data"]
+        # Dual-syntax fallback: if var uses ':' separator and was not found,
+        # also search the '_' form (old-syntax broadband layers store
+        # SRCREV_pn-X while wrynose fetcher/classes look up SRCREV:pn-X).
+        if ':' in var:
+            alt = var.replace(':', '_', 1)
+            dest = self.dict
+            while dest:
+                if alt in dest:
+                    return dest[alt]
+                if "_data" not in dest:
+                    break
+                dest = dest["_data"]
         return None
 
     def _makeShadowCopy(self, var):
@@ -544,14 +556,6 @@ class DataSmart(MutableMapping):
     def setVar(self, var, value, **loginfo):
         #print("var=" + str(var) + "  val=" + str(value))
 
-        if not var.startswith("__anon_") and ("_append" in var or "_prepend" in var or "_remove" in var):
-            info = "%s" % var
-            if "file" in loginfo:
-                info += " file: %s" % loginfo["file"]
-            if "line" in loginfo:
-                info += " line: %s" % loginfo["line"]
-            bb.fatal("Variable %s contains an operation using the old override syntax. Please convert this layer/metadata before attempting to use with a newer bitbake." % info)
-
         shortvar = var.split(":", 1)[0]
         if shortvar in self._var_renames:
             _print_rename_error(shortvar, loginfo, self._var_renames, fullvar=var)
@@ -569,7 +573,7 @@ class DataSmart(MutableMapping):
         match  = __setvar_regexp__.match(var)
         if match and match.group("keyword") in __setvar_keyword__:
             base = match.group('base')
-            keyword = match.group("keyword")
+            keyword = match.group("keyword").replace(":", "_")  # normalise :append -> _append
             override = match.group('add')
             l = self.getVarFlag(base, keyword, False) or []
             l.append([value, override])
@@ -595,12 +599,12 @@ class DataSmart(MutableMapping):
             self._makeShadowCopy(var)
 
         if not parsing:
-            if ":append" in self.dict[var]:
-                del self.dict[var][":append"]
-            if ":prepend" in self.dict[var]:
-                del self.dict[var][":prepend"]
-            if ":remove" in self.dict[var]:
-                del self.dict[var][":remove"]
+            if "_append" in self.dict[var]:
+                del self.dict[var]["_append"]
+            if "_prepend" in self.dict[var]:
+                del self.dict[var]["_prepend"]
+            if "_remove" in self.dict[var]:
+                del self.dict[var]["_remove"]
             if var in self.overridedata:
                 active = []
                 self.need_overrides()
@@ -615,7 +619,7 @@ class DataSmart(MutableMapping):
                 del self.overridedata[var]
 
         # more cookies for the cookie monster
-        if ':' in var:
+        if ':' in var or '_' in var:
             self._setvar_update_overrides(var, **loginfo)
 
         # setting var
@@ -642,8 +646,10 @@ class DataSmart(MutableMapping):
 
     def _setvar_update_overrides(self, var, **loginfo):
         # aka pay the cookie monster
-        override = var[var.rfind(':')+1:]
-        shortvar = var[:var.rfind(':')]
+        # Use ':' as separator if present (new syntax), else '_' (old syntax)
+        sep = ':' if ':' in var else '_'
+        override = var[var.rfind(sep)+1:]
+        shortvar = var[:var.rfind(sep)]
         while override and __override_regexp__.match(override):
             if shortvar not in self.overridedata:
                 self.overridedata[shortvar] = []
@@ -652,9 +658,20 @@ class DataSmart(MutableMapping):
                 self.overridedata[shortvar] = list(self.overridedata[shortvar])
                 self.overridedata[shortvar].append([var, override])
             override = None
-            if ":" in shortvar:
-                override = var[shortvar.rfind(':')+1:]
-                shortvar = var[:shortvar.rfind(':')]
+            if sep in shortvar:
+                if sep == '_':
+                    # For '_' syntax (old/broadband layers), do not walk the chain
+                    # further. Multi-level '_' names (e.g. SRCREV_rdk_cellularmanager)
+                    # would otherwise register e.g. overridedata["SRCREV"]["rdk"],
+                    # poisoning SRCREV globally since "rdk" is in DISTROOVERRIDES.
+                    # Single-level '_' override is sufficient for all broadband layers.
+                    break
+                # Use var (original full var) with shortvar.rfind for the split
+                # position — this preserves the compound override token
+                # (e.g. 'libpam-ptest:class-native') rather than truncating it
+                # to just the intermediate token ('libpam-ptest').
+                override = var[shortvar.rfind(sep)+1:]
+                shortvar = var[:shortvar.rfind(sep)]
                 if len(shortvar) == 0:
                     override = None
 
@@ -695,7 +712,7 @@ class DataSmart(MutableMapping):
                 self.overridedata[newkey].append([v.replace(key, newkey), o])
                 self.renameVar(v, v.replace(key, newkey))
 
-        if ':' in newkey and val is None:
+        if ('_' in newkey or ':' in newkey) and val is None:
             self._setvar_update_overrides(newkey, **loginfo)
 
         loginfo['variable'] = key
@@ -707,12 +724,12 @@ class DataSmart(MutableMapping):
     def appendVar(self, var, value, **loginfo):
         loginfo['op'] = 'append'
         self.varhistory.record(**loginfo)
-        self.setVar(var + ":append", value, ignore=True, parsing=True)
+        self.setVar(var + "_append", value, ignore=True, parsing=True)
 
     def prependVar(self, var, value, **loginfo):
         loginfo['op'] = 'prepend'
         self.varhistory.record(**loginfo)
-        self.setVar(var + ":prepend", value, ignore=True, parsing=True)
+        self.setVar(var + "_prepend", value, ignore=True, parsing=True)
 
     def delVar(self, var, **loginfo):
         self.expand_cache = {}
@@ -723,9 +740,10 @@ class DataSmart(MutableMapping):
         self.dict[var] = {}
         if var in self.overridedata:
             del self.overridedata[var]
-        if ':' in var:
-            override = var[var.rfind(':')+1:]
-            shortvar = var[:var.rfind(':')]
+        sep = ':' if ':' in var else '_'
+        if sep in var:
+            override = var[var.rfind(sep)+1:]
+            shortvar = var[:var.rfind(sep)]
             while override and __override_regexp__.match(override):
                 try:
                     if shortvar in self.overridedata:
@@ -735,9 +753,14 @@ class DataSmart(MutableMapping):
                 except ValueError as e:
                     pass
                 override = None
-                if ":" in shortvar:
-                    override = var[shortvar.rfind(':')+1:]
-                    shortvar = var[:shortvar.rfind(':')]
+                if sep in shortvar:
+                    if sep == '_':
+                        # Same single-level rule as _setvar_update_overrides.
+                        break
+                    # Same fix as _setvar_update_overrides: use var with
+                    # shortvar.rfind to preserve compound override tokens.
+                    override = var[shortvar.rfind(sep)+1:]
+                    shortvar = var[:shortvar.rfind(sep)]
                     if len(shortvar) == 0:
                          override = None
 
@@ -760,7 +783,7 @@ class DataSmart(MutableMapping):
             self._makeShadowCopy(var)
         self.dict[var][flag] = value
 
-        if flag == "_defaultval" and ':' in var:
+        if flag == "_defaultval" and (':' in var or '_' in var):
             self._setvar_update_overrides(var, **loginfo)
         if flag == "_defaultval" and var in self.overridevars:
             self._setvar_update_overridevars(var, value)
@@ -833,12 +856,12 @@ class DataSmart(MutableMapping):
                 value = copy.copy(local_var["_defaultval_flag_"+flag])
 
 
-        if flag == "_content" and local_var is not None and ":append" in local_var and not parsing:
+        if flag == "_content" and local_var is not None and "_append" in local_var and not parsing:
             self.need_overrides()
-            for (r, o) in local_var[":append"]:
+            for (r, o) in local_var["_append"]:
                 match = True
                 if o:
-                    for o2 in o.split(":"):
+                    for o2 in o.split("_"):
                         if not o2 in self.overrides:
                             match = False                            
                 if match:
@@ -846,13 +869,13 @@ class DataSmart(MutableMapping):
                         value = ""
                     value = value + r
 
-        if flag == "_content" and local_var is not None and ":prepend" in local_var and not parsing:
+        if flag == "_content" and local_var is not None and "_prepend" in local_var and not parsing:
             self.need_overrides()
-            for (r, o) in local_var[":prepend"]:
+            for (r, o) in local_var["_prepend"]:
 
                 match = True
                 if o:
-                    for o2 in o.split(":"):
+                    for o2 in o.split("_"):
                         if not o2 in self.overrides:
                             match = False                            
                 if match:
@@ -866,12 +889,12 @@ class DataSmart(MutableMapping):
         if expand:
             value = parser.value
 
-        if value and flag == "_content" and local_var is not None and ":remove" in local_var and not parsing:
+        if value and flag == "_content" and local_var is not None and "_remove" in local_var and not parsing:
             self.need_overrides()
-            for (r, o) in local_var[":remove"]:
+            for (r, o) in local_var["_remove"]:
                 match = True
                 if o:
-                    for o2 in o.split(":"):
+                    for o2 in o.split("_"):
                         if not o2 in self.overrides:
                             match = False                            
                 if match:
