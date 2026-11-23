@@ -202,17 +202,22 @@ def _inherit(bbclass, data):
     bb.parse.BBHandler.inherit(bbclass, "configuration INHERITs", 0, data)
     return data
 
-def findConfigFile(configfile, data):
+def findConfigFile(configfile, data, mc = "default"):
     search = []
     bbpath = data.getVar("BBPATH")
     if bbpath:
         for i in bbpath.split(":"):
-            search.append(os.path.join(i, "conf", configfile))
+            if mc != 'default':
+                bblayerpath = os.path.join(i, "conf/" + mc, configfile)
+                if not os.path.exists(bblayerpath):
+                    bblayerpath = os.path.join(i, "conf", configfile)
+            else:
+                bblayerpath = os.path.join(i, "conf", configfile)
+            search.append(bblayerpath)
     path = os.getcwd()
     while path != "/":
         search.append(os.path.join(path, "conf", configfile))
         path, _ = os.path.split(path)
-
     for i in search:
         if os.path.exists(i):
             return i
@@ -231,7 +236,7 @@ def findTopdir():
         bbpath = os.environ['BBPATH']
         d.setVar('BBPATH', bbpath)
 
-    layerconf = findConfigFile("bblayers.conf", d)
+    layerconf = findConfigFile("bblayers.conf", d, mc = "default")
     if layerconf:
         return os.path.dirname(os.path.dirname(layerconf))
     if bbpath:
@@ -333,8 +338,8 @@ class CookerDataBuilder(object):
         self.data = bb.data.createCopy(self.origdata)
         self.mcdata[''] = self.data
 
-    def _findLayerConf(self, data):
-        return findConfigFile("bblayers.conf", data)
+    def _findLayerConf(self, data, mc):
+        return findConfigFile("bblayers.conf", data, mc)
 
     def parseConfigurationFiles(self, prefiles, postfiles, mc = "default"):
         data = bb.data.createCopy(self.basedata)
@@ -344,13 +349,16 @@ class CookerDataBuilder(object):
         for f in prefiles:
             data = parse_config_file(f, data)
 
-        layerconf = self._findLayerConf(data)
+        layerconf = self._findLayerConf(data, mc)
         if layerconf:
             parselog.debug(2, "Found bblayers.conf (%s)", layerconf)
-            # By definition bblayers.conf is in conf/ of TOPDIR.
-            # We may have been called with cwd somewhere else so reset TOPDIR
-            data.setVar("TOPDIR", os.path.dirname(os.path.dirname(layerconf)))
-            data = parse_config_file(layerconf, data)
+
+            if mc == 'default':
+                # By definition bblayers.conf is in conf/ of TOPDIR.
+                # We may have been called with cwd somewhere else so reset TOPDIR
+                data.setVar("TOPDIR", os.path.dirname(os.path.dirname(layerconf)))
+
+            data = parse_config_file(layerconf, data)       
 
             layers = (data.getVar('BBLAYERS') or "").split()
             broken_layers = []
