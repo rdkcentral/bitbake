@@ -66,6 +66,11 @@ def inherit(files, fn, lineno, d):
 def get_statements(filename, absolute_filename, base_name):
     global cached_statements
 
+    if ('BB_DUMP' in os.environ):
+        with open('filedump.txt', 'a') as f:
+            f.write(filename)
+            f.write("\n")
+
     try:
         return cached_statements[absolute_filename]
     except KeyError:

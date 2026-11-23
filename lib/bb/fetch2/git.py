@@ -655,6 +655,13 @@ class Git(FetchMethod):
                 ud.basecmd, ud.revisions[name], ud.branches[name])
         try:
             output = runfetchcmd(cmd, d, quiet=True, workdir=wd)
+            if output.split()[0] == "0" and ud.branches[name] == "master":
+                cmd_nobranch = "%s log --pretty=oneline -n 1 %s -- 2> /dev/null | wc -l" % (
+                ud.basecmd, ud.revisions[name])
+                logger.warn("Unable to find master branch in url = %s . Consider fixing the recipe"%ud.url)
+                output = runfetchcmd(cmd_nobranch, d, quiet=True, workdir=wd)
+                if output.split()[0] != "0":
+                    ud.nobranch = True
         except bb.fetch2.FetchError:
             return False
         if len(output.split()) > 1:
@@ -799,7 +806,7 @@ class Git(FetchMethod):
                 sha1, ref = l.split()
                 if s == ref:
                     return sha1
-        raise bb.fetch2.FetchError("Unable to resolve '%s' in upstream git repository in git ls-remote output for %s" % \
+        raise bb.parse.SkipRecipe("Skipping Recipe : Unable to resolve '%s' in upstream git repository in git ls-remote output for %s" % \
             (ud.unresolvedrev[name], ud.host+ud.path))
 
     def latest_versionstring(self, ud, d):
