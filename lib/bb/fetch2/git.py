@@ -147,6 +147,9 @@ class Git(FetchMethod):
         else:
             ud.proto = "git"
 
+        if ud.host == "github.com" and ud.proto == "git":
+            ud.proto = "https"
+
         if not ud.proto in ('git', 'file', 'ssh', 'http', 'https', 'rsync'):
             raise bb.fetch2.ParameterError("Invalid protocol type", ud.url)
 
@@ -324,10 +327,14 @@ class Git(FetchMethod):
                 runfetchcmd("%s checkout-index -q -f -a" % ud.basecmd, d, workdir=destdir)
             elif not ud.nobranch:
                 branchname =  ud.branches[ud.names[0]]
-                runfetchcmd("%s checkout -B %s %s" % (ud.basecmd, branchname, \
-                            ud.revisions[ud.names[0]]), d, workdir=destdir)
-                runfetchcmd("%s branch %s --set-upstream-to origin/%s" % (ud.basecmd, branchname, \
-                            branchname), d, workdir=destdir)
+                try:
+                    runfetchcmd("%s checkout -B %s %s" % (ud.basecmd, branchname, \
+                                ud.revisions[ud.names[0]]), d, workdir=destdir)
+                    runfetchcmd("%s branch %s --set-upstream-to origin/%s" % (ud.basecmd, branchname, \
+                                branchname), d, workdir=destdir)
+                except bb.fetch2.FetchError:
+                    logger.warn("Fetch Failed, tryingout without no branch\n")
+                    runfetchcmd("%s checkout %s" % (ud.basecmd, ud.revisions[ud.names[0]]), d, workdir=destdir)
             else:
                 runfetchcmd("%s checkout %s" % (ud.basecmd, ud.revisions[ud.names[0]]), d, workdir=destdir)
 
@@ -353,6 +360,14 @@ class Git(FetchMethod):
                 ud.basecmd, ud.revisions[name], ud.branches[name])
         try:
             output = runfetchcmd(cmd, d, quiet=True, workdir=wd)
+            if output.split()[0] == "0" and ud.branches[name] == "master":
+                cmd_nobranch = "%s log --pretty=oneline -n 1 %s -- 2> /dev/null | wc -l" % (
+                ud.basecmd, ud.revisions[name])
+                logger.warn("Unable to find master branch in url = %s . Consider fixing the recipe"%ud.url)
+                output = runfetchcmd(cmd_nobranch, d, quiet=True, workdir=wd)
+                if output.split()[0] != "0":
+                    ud.nobranch = True
+                    ud.branches[name] = "main"
         except bb.fetch2.FetchError:
             return False
         if len(output.split()) > 1:

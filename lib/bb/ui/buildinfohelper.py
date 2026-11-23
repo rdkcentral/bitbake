@@ -120,7 +120,8 @@ class ORMWrapper(object):
             vars(self)[dictname] = {}
 
         if not key in vars(self)[dictname].keys():
-            vars(self)[dictname][key] = clazz.objects.get(**kwargs)
+            if ( 'path' not in kwargs ) or ( 'path' in kwargs and kwargs.get('path') != '' ):
+                vars(self)[dictname][key] = clazz.objects.get(**kwargs)
 
         return vars(self)[dictname][key]
 
